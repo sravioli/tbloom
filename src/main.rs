@@ -1,4 +1,4 @@
-// Fullscreen TUI renderer for a 3D autumn bouquet. Drag with the mouse to rotate, q to quit.
+// Fullscreen TUI renderer for a 3D bouquet (or an FBX model). Drag with the mouse to rotate, q to quit.
 mod cli;
 mod engine;
 mod scene;

@@ -36,7 +36,7 @@ fn controls() -> String {
     )
 }
 
-/// Fullscreen terminal renderer for a 3D autumn bouquet.
+/// Show a 3D bouquet in the terminal. Turn it with the mouse or the keyboard.
 #[derive(Parser)]
 #[command(name = "tbloom", after_help = controls(), styles = STYLES, args_override_self = true)]
 pub struct Opt {
