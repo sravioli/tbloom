@@ -1,66 +1,73 @@
-// Terminal control: raw mode, size, poll/read on stdin.
-use std::io::Write;
-use std::sync::Mutex;
+// Terminal control on crossterm: raw mode, alternate screen, mouse capture, input events.
+use crossterm::{cursor, event, execute, style, terminal};
+use std::io::stdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-static SAVED: Mutex<Option<libc::termios>> = Mutex::new(None);
+pub use crossterm::event::Event;
+
+/// Set while the terminal is in raw mode, so restore() runs once (panic hook + exit).
+static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub fn size() -> (usize, usize) {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
-        return (ws.ws_col as usize, ws.ws_row as usize);
+    // some ptys report 0 x 0
+    match terminal::size() {
+        Ok((c, r)) if c > 0 && r > 0 => (c as usize, r as usize),
+        _ => (80, 24),
     }
-    (80, 24)
 }
 
 pub fn init() -> Result<(), String> {
-    let mut t: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(0, &mut t) } != 0 {
-        return Err("stdin is not a terminal (use --snapshot)".into());
-    }
-    let mut raw = t;
-    unsafe {
-        libc::cfmakeraw(&mut raw);
-        libc::tcsetattr(0, libc::TCSANOW, &raw);
-    }
-    *SAVED.lock().unwrap() = Some(t);
-    let mut out = std::io::stdout();
-    let _ = out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[2J");
-    let _ = out.flush();
-    Ok(())
+    terminal::enable_raw_mode()
+        .map_err(|e| format!("cannot use the terminal: {e} (use --snapshot)"))?;
+    ACTIVE.store(true, Ordering::SeqCst);
+    execute!(
+        stdout(),
+        terminal::EnterAlternateScreen,
+        cursor::Hide,
+        event::EnableMouseCapture,
+        terminal::Clear(terminal::ClearType::All)
+    )
+    .map_err(|e| e.to_string())
 }
 
-/// Leave raw mode and the alternate screen. Safe to call more than once (panic hook + exit).
+/// Leave raw mode and the alternate screen. Safe to call more than once.
 pub fn restore() {
-    let Some(t) = SAVED.lock().map_or(None, |mut s| s.take()) else {
+    if !ACTIVE.swap(false, Ordering::SeqCst) {
         return;
-    };
-    let mut out = std::io::stdout();
-    let _ = out.write_all(b"\x1b[0m\x1b[?1002l\x1b[?1006l\x1b[?25h\x1b[?1049l");
-    let _ = out.flush();
-    unsafe { libc::tcsetattr(0, libc::TCSANOW, &t) };
+    }
+    let _ = execute!(
+        stdout(),
+        style::ResetColor,
+        event::DisableMouseCapture,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    );
+    let _ = terminal::disable_raw_mode();
 }
 
 pub enum Input {
-    Data(Vec<u8>),
+    /// everything that arrived: handled together so a fast drag draws once, not per event
+    Events(Vec<Event>),
     Timeout,
-    /// terminal gone: poll keeps firing but read returns 0
+    /// the terminal went away
     Closed,
 }
 
-/// Wait up to ms for input.
-pub fn read(ms: i32) -> Input {
-    let mut pfd = libc::pollfd {
-        fd: 0,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    if unsafe { libc::poll(&mut pfd, 1, ms) } > 0 {
-        let mut buf = [0u8; 4096];
-        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
-        if n > 0 {
-            return Input::Data(buf[..n as usize].to_vec());
-        }
-        return Input::Closed;
+/// Wait up to ms for input, then take all that is queued.
+pub fn read(ms: u64) -> Input {
+    let ready = |ms| event::poll(Duration::from_millis(ms));
+    match ready(ms) {
+        Ok(false) => return Input::Timeout,
+        Err(_) => return Input::Closed,
+        Ok(true) => {}
     }
-    Input::Timeout // also on EINTR (window resize): the caller re-checks the size
+    let mut events = Vec::new();
+    while let Ok(true) = ready(0) {
+        match event::read() {
+            Ok(e) => events.push(e),
+            Err(_) => return Input::Closed,
+        }
+    }
+    Input::Events(events)
 }
