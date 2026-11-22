@@ -88,10 +88,8 @@ pub fn load(path: &str) -> Result<Vec<Group>, String> {
                 [p.x, p.y, p.z, uv.x, uv.y]
             };
             let n = mesh.triangulate_face(&mut idx, face) as usize;
-            for t in idx[..n * 3].chunks_exact(3) {
-                groups[gi]
-                    .tris
-                    .push([corner(t[0]), corner(t[1]), corner(t[2])]);
+            for &[a, b, c] in idx[..n * 3].as_chunks::<3>().0 {
+                groups[gi].tris.push([corner(a), corner(b), corner(c)]);
             }
         }
     }
