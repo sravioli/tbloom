@@ -1,63 +1,11 @@
-// Texture loading: PNG and JPEG, downscaled at load time.
+// Texture loading: PNG and JPEG (decoded by the image crate), downscaled at load time.
 use super::mesh::Texture;
-use std::io::Cursor;
 
-const MAX_PIXELS: usize = 64 * 1024 * 1024; // refuse absurd image headers
+/// Most bytes a decoder may allocate: refuses absurd image headers (64 Mpx of RGBA).
+const MAX_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// (w, h, RGBA8 pixels)
 type Rgba = (usize, usize, Vec<u8>);
-
-/// Expand 1-4 channel 8-bit pixels (gray, gray+alpha, rgb, rgba) to RGBA.
-fn to_rgba(px: &[u8], channels: usize) -> Vec<u8> {
-    px.chunks_exact(channels)
-        .flat_map(|p| match channels {
-            1 => [p[0], p[0], p[0], 255],
-            2 => [p[0], p[0], p[0], p[1]],
-            3 => [p[0], p[1], p[2], 255],
-            _ => [p[0], p[1], p[2], p[3]],
-        })
-        .collect()
-}
-
-fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
-    let bad = |e: png::DecodingError| format!("bad png: {e}");
-    // its default limits cover only its own buffers (rows, metadata); the image size is checked below
-    let mut dec = png::Decoder::new(Cursor::new(bytes));
-    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = dec.read_info().map_err(bad)?;
-    let (w, h) = (reader.info().width as usize, reader.info().height as usize);
-    if w * h > MAX_PIXELS {
-        return Err("png too large".into());
-    }
-    let channels = match reader.output_color_type().0 {
-        png::ColorType::Grayscale => 1,
-        png::ColorType::GrayscaleAlpha => 2,
-        png::ColorType::Rgb => 3,
-        png::ColorType::Rgba => 4,
-        png::ColorType::Indexed => return Err("bad png: palette not expanded".into()),
-    };
-    let mut buf = vec![0; reader.output_buffer_size().ok_or("png too large")?];
-    let info = reader.next_frame(&mut buf).map_err(bad)?;
-    buf.truncate(info.buffer_size());
-    Ok((w, h, to_rgba(&buf, channels)))
-}
-
-fn decode_jpeg(bytes: &[u8]) -> Result<Rgba, String> {
-    use zune_jpeg::zune_core::{colorspace::ColorSpace, options::DecoderOptions};
-    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
-    let mut dec = zune_jpeg::JpegDecoder::new_with_options(Cursor::new(bytes), opts);
-    dec.decode_headers().map_err(|_| "bad jpeg header")?;
-    let info = dec.info().ok_or("bad jpeg header")?;
-    let (w, h) = (info.width as usize, info.height as usize);
-    if w * h > MAX_PIXELS {
-        return Err("jpeg too large".into());
-    }
-    let px = dec.decode().map_err(|_| "bad jpeg data")?;
-    match px.len().checked_div(w * h) {
-        Some(c @ 1..=4) if px.len() == c * w * h => Ok((w, h, to_rgba(&px, c))),
-        _ => Err("bad jpeg data".into()),
-    }
-}
 
 /// Box-filter down to at most `size` px on the long side. Color is averaged weighted by alpha
 /// so cut-out edges don't pick up the (often black) color of transparent pixels.
@@ -105,13 +53,34 @@ fn downscale((iw, ih, px): Rgba, size: usize) -> Texture {
 
 /// Load and downscale an image file.
 pub fn load(path: &str, size: usize) -> Result<Texture, String> {
-    let bytes = std::fs::read(path).map_err(|_| format!("cannot open {path}"))?;
-    let img = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        decode_png(&bytes)
-    } else if bytes.starts_with(b"\xff\xd8") {
-        decode_jpeg(&bytes)
-    } else {
-        return Err(format!("unknown image format: {path}"));
-    };
-    Ok(downscale(img.map_err(|e| format!("{e} ({path})"))?, size))
+    let bad = |e: image::ImageError| format!("{e} ({path})");
+    let mut reader = image::ImageReader::open(path)
+        .map_err(|_| format!("cannot open {path}"))?
+        .with_guessed_format()
+        .map_err(|_| format!("cannot open {path}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_ALLOC);
+    reader.limits(limits);
+    let img = reader.decode().map_err(bad)?.into_rgba8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    Ok(downscale((w, h, img.into_raw()), size))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejects_bad_files() {
+        let dir = std::env::temp_dir().join(format!("tbloom-img-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, data) in [
+            ("junk.png", b"not an image at all".to_vec()),
+            ("cut.png", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0".to_vec()),
+        ] {
+            let p = dir.join(name);
+            std::fs::write(&p, data).unwrap();
+            assert!(super::load(p.to_str().unwrap(), 16).is_err(), "{name}");
+        }
+        assert!(super::load("/nonexistent/x.png", 16).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
