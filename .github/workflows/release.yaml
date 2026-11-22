@@ -1,0 +1,64 @@
+---
+name: github-release
+run-name: Perform release from latest tag
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags: ["*"]
+
+jobs:
+  release:
+    name: Create a GitHub release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - run: >-
+          git config user.name github-actions;
+          git config user.email github-actions@github.com;
+          git config --global user.email github-actions@github.com;
+          git config --global user.name github-actions;
+
+      - name: SemVer release
+        uses: cocogitto/cocogitto-action@v4
+        id: release
+        with:
+          command: check
+
+      # The binaries report the Cargo.toml version: refuse a tag that differs from it.
+      # The tag reaches the shell as data (env), never as script text.
+      - name: Check the crate version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match the Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Generate changelog
+        env:
+          TAG: ${{ github.ref_name }}
+        run: cog changelog --at "$TAG" --template remote > GITHUB_CHANGELOG.md
+
+      - name: Upload github release
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: GITHUB_CHANGELOG.md
+          tag_name: ${{ github.ref_name }}
+
+  # A release made with GITHUB_TOKEN starts no other workflow, so call the packages here.
+  packages:
+    name: Packages
+    needs: release
+    uses: ./.github/workflows/packages.yaml
+    with:
+      tag: ${{ github.ref_name }}
