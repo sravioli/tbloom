@@ -1,6 +1,6 @@
 <h1 align="center">tbloom</h1>
 
-<p align="center">A 3D bouquet in your terminal. Turn it with the mouse or the keyboard.</p>
+<p align="center">💐 Flowers in the terminal.</p>
 
 <p align="center">
   <img src=".github/assets/sextant.png" alt="tbloom shows a bouquet with sextant glyphs in a WezTerm window" width="800">
