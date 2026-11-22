@@ -38,16 +38,16 @@ cargo install --git https://github.com/sravioli/tbloom
 
 ## Usage
 
-Start tbloom:
-
-```sh
-tbloom
-```
-
-Show the bouquet with sextant characters. They give more detail than the default half blocks:
+Start tbloom with sextant characters. This mode gives the most detail:
 
 ```sh
 tbloom --nerd
+```
+
+If your terminal cannot draw sextant characters, start tbloom with the default half blocks:
+
+```sh
+tbloom
 ```
 
 Show an FBX model:
