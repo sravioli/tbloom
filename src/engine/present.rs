@@ -4,7 +4,7 @@ use super::raster::Framebuffer;
 use std::fmt::Write;
 
 /// Sextant glyph per 6-bit mask; bit0=TL bit1=TR bit2=ML bit3=MR bit4=BL bit5=BR.
-pub fn sext(mask: usize) -> char {
+fn sext(mask: usize) -> char {
     match mask {
         0 => ' ',
         63 => '\u{2588}',
@@ -20,7 +20,7 @@ pub fn sext(mask: usize) -> char {
 
 const RAMP: &[u8] = b" .:-=+*#%@";
 /// Ramp character and its index for luminance l in [0, 1].
-pub fn ramp(l: f64) -> (char, usize) {
+fn ramp(l: f64) -> (char, usize) {
     let i = (l * RAMP.len() as f64)
         .floor()
         .clamp(0.0, (RAMP.len() - 1) as f64) as usize;
@@ -31,7 +31,7 @@ const BAYER: [f64; 16] = [
     0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.,
 ];
 /// Dithered sextant glyph from 6 luminances (TL, TR, ML, MR, BL, BR) at pixel origin (x0, y0).
-pub fn dither(lums: &[f64; 6], x0: usize, y0: usize) -> (char, usize) {
+fn dither(lums: &[f64; 6], x0: usize, y0: usize) -> (char, usize) {
     let mut mask = 0;
     for (k, &l) in lums.iter().enumerate() {
         let (x, y) = (x0 + k % 2, y0 + k / 2);
@@ -59,7 +59,7 @@ fn lum(r: f64, g: f64, b: f64) -> f64 {
 
 /// Monochrome/ASCII brightness lift: the scene is mostly near-black (chiaroscuro), so a linear
 /// ramp would leave it blank. sqrt opens up the shadows; true black stays empty.
-pub fn lift(l: f64) -> f64 {
+fn lift(l: f64) -> f64 {
     if l < 0.012 { 0.0 } else { l.sqrt() }
 }
 
@@ -94,7 +94,7 @@ const GID_HALF: i64 = 64;
 const GID_RAMP: i64 = 65;
 /// Returns glyph, fg (24-bit int), bg (24-bit int, -1 = none), glyph id for cell (cx, cy).
 /// Glyph ids: 0 space, 1..63 sextant/dither mask, 64 half block, 65+ ramp index.
-pub fn cell(st: &Present, fb: &Framebuffer, cx: usize, cy: usize) -> (char, i64, i64, i64) {
+fn cell(st: &Present, fb: &Framebuffer, cx: usize, cy: usize) -> (char, i64, i64, i64) {
     let (w, r, g, b) = (fb.w, &fb.r, &fb.g, &fb.b);
     if !st.nerd {
         let (i, j) = (cy * 2 * w + cx, (cy * 2 + 1) * w + cx);
