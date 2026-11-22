@@ -1,5 +1,5 @@
 // Mesh builder: primitives emit positions + colors, normals are computed on finish().
-use super::math3d::{Frame, V3, dot, frame, sub};
+use super::math3d::{DVec3, Frame, frame};
 use std::f64::consts::PI;
 use std::rc::Rc;
 
@@ -130,7 +130,7 @@ impl Builder {
 
     /// Mark triangles added since index i0 (into idx) as one closed surface: wind them outward
     /// (positive signed volume about center c) so the rasterizer can skip their back faces.
-    fn close(&mut self, i0: usize, c: V3) {
+    fn close(&mut self, i0: usize, c: DVec3) {
         let (idx, x, y, z) = (&mut self.idx, &self.x, &self.y, &self.z);
         let mut vol = 0.0;
         for k in (i0..idx.len()).step_by(3) {
@@ -204,8 +204,8 @@ impl Builder {
     /// Flat band through points[i] with its width along wdirs[i] (bow loops, ribbon tails).
     pub fn ribbon(
         &mut self,
-        points: &[V3],
-        wdirs: &[V3],
+        points: &[DVec3],
+        wdirs: &[DVec3],
         width: f64,
         col: impl Fn(f64, f64) -> [f64; 4],
     ) {
@@ -227,10 +227,17 @@ impl Builder {
     }
 
     /// Open-ended tube: not closed, so seen end-on its inside is still drawn.
-    pub fn cylinder(&mut self, a: V3, b: V3, r: f64, seg: usize, (cr, cg, cb): (f64, f64, f64)) {
-        let axis = sub(b, a);
+    pub fn cylinder(
+        &mut self,
+        a: DVec3,
+        b: DVec3,
+        r: f64,
+        seg: usize,
+        (cr, cg, cb): (f64, f64, f64),
+    ) {
+        let axis = b - a;
         let f = frame(a, axis, 0.0);
-        let len = dot(axis, axis).sqrt();
+        let len = axis.dot(axis).sqrt();
         self.grid(seg, 1, true, |u, v| {
             let th = u * 2.0 * PI;
             let (x, y, z) = at(&f, r * th.cos(), r * th.sin(), len * v);

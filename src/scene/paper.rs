@@ -6,7 +6,7 @@
 // it is cinched onto the stems; below it, it carries on as a short bunched sleeve.
 use super::Rng;
 use crate::engine::mesh::{Builder, Mesh};
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 /// Columns around the axis: of the envelope and of every sheet, so sheets nest exactly.
 const COLS: usize = 144;
@@ -46,6 +46,10 @@ pub struct Paper {
 fn col_angle(i: usize) -> f64 {
     i as f64 * TAU / COLS as f64
 }
+/// Column nearest the direction of (x, y) from the axis.
+fn col_of(x: f64, y: f64) -> usize {
+    (y.atan2(x).rem_euclid(TAU) / TAU * COLS as f64).round() as usize % COLS
+}
 fn angdist(a: f64, b: f64) -> f64 {
     let d = (a - b).rem_euclid(TAU);
     d.min(TAU - d)
@@ -73,8 +77,7 @@ impl Envelope {
                 if z < z0 || z >= TOP {
                     continue; // below the tie or above every sheet
                 }
-                let i = (y.atan2(x).rem_euclid(TAU) / TAU * COLS as f64).round() as usize % COLS;
-                let c = &mut raw[i * NZ + ((z - z0) / dz) as usize]; // level at or below z
+                let c = &mut raw[col_of(x, y) * NZ + ((z - z0) / dz) as usize]; // level at or below z
                 *c = c.max(x.hypot(y));
             }
         }
@@ -120,7 +123,7 @@ fn cap(env: &Envelope, spill: &Mesh) -> Vec<f64> {
     let mut low = vec![TOP; COLS];
     for k in 0..spill.n {
         let (x, y, z) = (spill.px[k], spill.py[k], spill.pz[k]);
-        let i = (y.atan2(x).rem_euclid(TAU) / TAU * COLS as f64).round() as usize % COLS;
+        let i = col_of(x, y);
         if z > env.z0 && x.hypot(y) >= env.at(i, z) {
             low[i] = low[i].min(z - CLEAR);
         }
@@ -193,7 +196,7 @@ impl Surface {
     fn crease(&self, c: usize, z: f64) -> f64 {
         let (prev, _) = self.facet((c + COLS - 1) % COLS);
         let (_, next) = self.facet(c);
-        let half = |n: usize| (n as f64 * TAU / COLS as f64 / 2.0).cos();
+        let half = |n: usize| (col_angle(n) / 2.0).cos();
         let left =
             self.need(prev, prev + (c + COLS - prev) % COLS, z) / half((c + COLS - prev) % COLS);
         (self.need(c, next, z) / half(next - c)).max(left)
@@ -204,7 +207,7 @@ impl Surface {
         if z < z0 {
             // the sleeve: puffs out under the knot and closes back onto the stems at the hem
             let d = (z0 - z) / SKIRT;
-            return self.radius(i, z0) + 0.006 + PUFF * (std::f64::consts::PI * d.min(1.0)).sin();
+            return self.radius(i, z0) + 0.006 + PUFF * (PI * d.min(1.0)).sin();
         }
         let (ca, cb) = self.facet(i);
         let (ra, rb) = (self.crease(ca % COLS, z), self.crease(cb % COLS, z));
@@ -220,7 +223,7 @@ impl Surface {
         // softness fades in above the knot, which stays exactly as tied
         let soft = smoothstep((z - z0 - 0.05) / 0.5);
         let across = (i - ca) as f64 / (cb - ca) as f64; // 0 and 1 at the creases
-        let billow = (std::f64::consts::PI * across).sin();
+        let billow = (PI * across).sin();
         let crumple = 0.5
             + 0.5 * (5.0 * a + 6.0 * z + p[0] + 1.3).sin() * (3.0 * a - 9.0 * z + p[1] + 2.1).sin();
         flat * (1.0 + GATHERS * fold * gathered + soft * (BILLOW * billow + CRUMPLE * crumple))
@@ -374,47 +377,35 @@ pub fn wrap(contents: &[&Mesh], spill: &Mesh, z0: f64) -> Paper {
 mod tests {
     use super::*;
 
-    type P3 = [f64; 3];
-    fn sub(a: P3, b: P3) -> P3 {
-        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-    }
-    fn cross(a: P3, b: P3) -> P3 {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    }
-    fn dot(a: P3, b: P3) -> f64 {
-        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-    }
+    use crate::engine::math3d::{DVec3, dvec3};
+
     /// Segment o..o+d crosses triangle abc (Möller-Trumbore).
-    fn crosses(o: P3, d: P3, [a, b, c]: [P3; 3]) -> bool {
-        let (e1, e2) = (sub(b, a), sub(c, a));
-        let h = cross(d, e2);
-        let det = dot(e1, h);
+    fn crosses(o: DVec3, d: DVec3, [a, b, c]: [DVec3; 3]) -> bool {
+        let (e1, e2) = (b - a, c - a);
+        let h = d.cross(e2);
+        let det = e1.dot(h);
         if det.abs() < 1e-12 {
             return false;
         }
-        let s = sub(o, a);
-        let q = cross(s, e1);
-        let (u, v, t) = (dot(s, h) / det, dot(d, q) / det, dot(e2, q) / det);
+        let s = o - a;
+        let q = s.cross(e1);
+        let (u, v, t) = (s.dot(h) / det, d.dot(q) / det, e2.dot(q) / det);
         u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0 && t < 1.0
     }
-    fn points(m: &Mesh) -> Vec<P3> {
-        (0..m.n).map(|k| [m.px[k], m.py[k], m.pz[k]]).collect()
+    fn points(m: &Mesh) -> Vec<DVec3> {
+        (0..m.n).map(|k| dvec3(m.px[k], m.py[k], m.pz[k])).collect()
     }
 
     /// Points outside any of the sheets: the segment from the axis to the point crosses one.
-    fn outside(sheets: &[&Mesh], pts: &[P3]) -> usize {
+    fn outside(sheets: &[&Mesh], pts: &[DVec3]) -> usize {
         // triangles with the arc of angles they cover, to skip most of them cheaply
-        let tris: Vec<([P3; 3], f64, f64)> = sheets
+        let tris: Vec<([DVec3; 3], f64, f64)> = sheets
             .iter()
             .flat_map(|m| {
                 let p = points(m);
                 (0..m.nt).map(move |k| {
                     let t = m.corners(k).map(|i| p[i]);
-                    let a: Vec<f64> = t.iter().map(|q| q[1].atan2(q[0])).collect();
+                    let a: Vec<f64> = t.iter().map(|q| q.y.atan2(q.x)).collect();
                     let d = |x: f64| (x - a[0] + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0; // relative to the first
                     let (lo, hi) = (d(a[1]).min(d(a[2])).min(0.0), d(a[1]).max(d(a[2])).max(0.0));
                     (t, a[0] + lo, hi - lo)
@@ -422,10 +413,11 @@ mod tests {
             })
             .collect();
         pts.iter()
-            .filter(|&&[x, y, z]| {
-                let a = y.atan2(x);
+            .filter(|p| {
+                let a = p.y.atan2(p.x);
                 tris.iter().any(|&(t, lo, span)| {
-                    (a - lo).rem_euclid(TAU) <= span && crosses([0.0, 0.0, z], [x, y, 0.0], t)
+                    (a - lo).rem_euclid(TAU) <= span
+                        && crosses(dvec3(0.0, 0.0, p.z), dvec3(p.x, p.y, 0.0), t)
                 })
             })
             .count()
@@ -435,7 +427,7 @@ mod tests {
     fn nothing_pokes_through() {
         // items: flowers, spilling foliage, pine cones, ribbon, paper sheets (innermost first), backdrop
         let s = super::super::bouquet::build();
-        let contents: Vec<P3> = s.items[..3]
+        let contents: Vec<DVec3> = s.items[..3]
             .iter()
             .flat_map(|it| points(&it.mesh))
             .collect();

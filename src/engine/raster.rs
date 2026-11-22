@@ -2,14 +2,14 @@
 // stores only (triangle, barycentrics) per pixel, then one shading pass per visible pixel
 // (ambient + wrapped Lambert + petal translucency + Blinn spec, bilinear PCF shadows,
 // cool rim light, color grade) + light glow. Optional supersampling (ss x ss per pixel).
-use super::math3d::{M3, V3, cross, norm, v};
+use super::math3d::{DMat3, DVec3, dvec3};
 use super::mesh::{Mesh, Texture};
 
 /// Camera rests at (0, 0, CAMZ) looking down -z, +y up; render() takes an offset.
 pub const CAMZ: f64 = 5.0;
 /// Shadow map resolution, half-extent in world units (covers the stems).
-pub const SM: usize = 640;
-pub const SE: f64 = 2.6;
+const SM: usize = 640;
+const SE: f64 = 2.6;
 const BIAS: f64 = 0.035;
 // Chiaroscuro: almost no fill light, a strong warm key light, black surroundings.
 const AMB: f64 = 0.07;
@@ -22,8 +22,8 @@ const CUT: f64 = 0.5; // alpha below this is a hole (petal and leaf cards)
 const EPS: f64 = -1e-9;
 
 /// Light direction in camera space (= world space, camera is axis aligned): top-right, toward viewer.
-pub fn light() -> V3 {
-    norm(v(1.0, 1.0, 0.9))
+fn light() -> DVec3 {
+    dvec3(1.0, 1.0, 0.9).normalize_or(DVec3::Z)
 }
 
 pub struct Item {
@@ -58,7 +58,7 @@ pub struct Framebuffer {
     sm: Vec<f64>,
     glow: Vec<f64>,
     /// pose the shadow map was drawn for (None: redraw it)
-    pub sm_rot: Option<M3>,
+    pub sm_rot: Option<DMat3>,
     /// Closed surfaces are wound outward; a front face then has this sign of screen-space area
     /// (screen y points down). 0 disables back-face skipping (used to verify it).
     pub cull: f64,
@@ -114,15 +114,15 @@ fn tone(c: f64) -> f64 {
     }
 }
 
-fn transform(fb: &Framebuffer, m: &mut Mesh, rot: &M3, cam: [f64; 3]) {
+fn transform(fb: &Framebuffer, m: &mut Mesh, rot: &DMat3, cam: [f64; 3]) {
     let l = light();
-    let u = norm(cross(v(0.0, 1.0, 0.0), l));
-    let vv = cross(l, u);
-    let rl = norm(v(-1.0, 0.35, -0.6)); // rim light direction: behind-left
+    let u = dvec3(0.0, 1.0, 0.0).cross(l).normalize_or(DVec3::Z);
+    let vv = l.cross(u);
+    let rl = dvec3(-1.0, 0.35, -0.6).normalize_or(DVec3::Z); // rim light direction: behind-left
     let (lx, ly, lz) = (l.x, l.y, l.z);
     let (ex, ey, ez) = (cam[0], cam[1], CAMZ + cam[2]); // eye position
     let (f, cx, cy, pw, ph) = (fb.f, fb.cx, fb.cy, fb.pw, fb.ph);
-    let [r1, r2, r3, r4, r5, r6, r7, r8, r9] = *rot;
+    let [r1, r2, r3, r4, r5, r6, r7, r8, r9] = rot.transpose().to_cols_array(); // rows
     let tscale = SM as f64 / (2.0 * SE);
     let t = &mut m.t;
     for i in 0..m.n {
@@ -283,7 +283,7 @@ impl Tri {
 
 /// Write light depths d of triangle p (shadow-map texel coordinates) into the map.
 /// tex: alpha-cut texture and the triangle's uvs, so holes cast no shadow.
-pub fn shadow_tri(
+fn shadow_tri(
     sm: &mut [f64],
     p: [f64; 6],
     [d0, d1, d2]: [f64; 3],
@@ -392,7 +392,7 @@ fn glow(w: usize, h: usize, pw: f64, ph: f64) -> Vec<f64> {
         for px in 0..w {
             let (dx, dy) = (
                 (ww - (px as f64 + 0.5) * pw) / rad,
-                ((py as f64 + 0.5) * ph) / rad,
+                (py as f64 + 0.5) * ph / rad,
             );
             let q = dx * dx + dy * dy;
             g[py * w + px] = 0.18 * (-q * 1.5).exp() + 0.45 * (-q * 14.0).exp(); // dim haze around a small bright source
@@ -401,49 +401,36 @@ fn glow(w: usize, h: usize, pw: f64, ph: f64) -> Vec<f64> {
     g
 }
 
-/// rot: pose of the items with rotate set; cam: eye offset from the rest position.
-pub fn render(fb: &mut Framebuffer, items: &mut [Item], rot: &M3, cam: [f64; 3]) {
-    let n = fb.iw * fb.ih;
-    fb.z.fill(0.0);
-    for it in items.iter_mut() {
-        transform(
-            fb,
-            &mut it.mesh,
-            if it.rotate {
-                rot
-            } else {
-                &super::math3d::IDENTITY
-            },
-            cam,
-        );
+/// Shadow map of the casters as the light sees them. It depends only on the pose (light and
+/// casters), not on zoom, so it is redrawn only when the pose changes.
+fn shadow_map(fb: &mut Framebuffer, items: &[Item], rot: &DMat3) {
+    if fb.sm_rot == Some(*rot) {
+        return;
     }
-    // the shadow map depends only on the pose (light and casters), not on zoom: reuse it
-    let same = fb.sm_rot == Some(*rot);
-    if !same {
-        fb.sm_rot = Some(*rot);
-        fb.sm.fill(0.0);
-        for it in items.iter().filter(|it| it.caster) {
-            let (m, t) = (&it.mesh, &it.mesh.t);
-            let tex = m.tex.as_deref().filter(|t| t.alpha);
-            for k in 0..m.nt {
-                let v = m.corners(k);
-                let p = corners(&t.tu, &t.tv, v);
-                // the light sees closed surfaces from one side too: their far faces never set the depth
-                if !culled(m.cl[k], &p, fb.cull) {
-                    shadow_tri(
-                        &mut fb.sm,
-                        p,
-                        v.map(|i| t.sd[i]),
-                        tex.map(|tx| (tx, corners(&m.mu, &m.mv, v))),
-                    );
-                }
+    fb.sm_rot = Some(*rot);
+    fb.sm.fill(0.0);
+    for it in items.iter().filter(|it| it.caster) {
+        let (m, t) = (&it.mesh, &it.mesh.t);
+        let tex = m.tex.as_deref().filter(|t| t.alpha);
+        for k in 0..m.nt {
+            let v = m.corners(k);
+            let p = corners(&t.tu, &t.tv, v);
+            // the light sees closed surfaces from one side too: their far faces never set the depth
+            if !culled(m.cl[k], &p, fb.cull) {
+                shadow_tri(
+                    &mut fb.sm,
+                    p,
+                    v.map(|i| t.sd[i]),
+                    tex.map(|tx| (tx, corners(&m.mu, &m.mv, v))),
+                );
             }
         }
     }
-    for (mi, it) in items.iter().enumerate() {
-        camera_tris(fb, &it.mesh, mi as u32);
-    }
-    for i in 0..n {
+}
+
+/// Light every sample the camera pass found (and the background) into the hr/hg/hb grid.
+fn shade(fb: &mut Framebuffer, items: &[Item]) {
+    for i in 0..fb.iw * fb.ih {
         let (mut r, mut gg, mut b);
         if fb.z[i] > 0.0 {
             let m = &items[fb.tm[i] as usize].mesh;
@@ -481,6 +468,10 @@ pub fn render(fb: &mut Framebuffer, items: &mut [Item], rot: &M3, cam: [f64; 3])
         fb.hg[i] = tone(gg + e * 0.93);
         fb.hb[i] = tone(b + e * 0.75);
     }
+}
+
+/// Box-filter the sample grid down to output pixels (a copy without supersampling).
+fn downsample(fb: &mut Framebuffer) {
     let ss = fb.ss;
     if ss == 1 {
         fb.r.copy_from_slice(&fb.hr);
@@ -488,7 +479,6 @@ pub fn render(fb: &mut Framebuffer, items: &mut [Item], rot: &M3, cam: [f64; 3])
         fb.b.copy_from_slice(&fb.hb);
         return;
     }
-    // box-filter the sample grid down to output pixels
     let (iw, w, inv) = (fb.iw, fb.w, 1.0 / (ss * ss) as f64);
     for y in 0..fb.h {
         for x in 0..w {
@@ -509,10 +499,29 @@ pub fn render(fb: &mut Framebuffer, items: &mut [Item], rot: &M3, cam: [f64; 3])
     }
 }
 
+/// rot: pose of the items with rotate set; cam: eye offset from the rest position.
+pub fn render(fb: &mut Framebuffer, items: &mut [Item], rot: &DMat3, cam: [f64; 3]) {
+    fb.z.fill(0.0);
+    for it in items.iter_mut() {
+        transform(
+            fb,
+            &mut it.mesh,
+            if it.rotate { rot } else { &DMat3::IDENTITY },
+            cam,
+        );
+    }
+    shadow_map(fb, items, rot);
+    for (mi, it) in items.iter().enumerate() {
+        camera_tris(fb, &it.mesh, mi as u32);
+    }
+    shade(fb, items);
+    downsample(fb);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::math3d::{IDENTITY, pose};
+    use crate::engine::math3d::pose;
     use crate::engine::mesh::Builder;
     use std::rc::Rc;
 
@@ -532,21 +541,10 @@ mod tests {
     #[test]
     fn span_rasterizer_matches_brute_force() {
         // covers exactly the pixel centers a brute-force inside test accepts
-        let mut seed = 99.0f64;
-        let mut r = |a: f64, b: f64| {
-            seed = (seed * 1103515245.0 + 12345.0) % 2147483648.0;
-            a + (b - a) * seed / 2147483648.0
-        };
+        let mut r = crate::scene::Rng(99.0);
         let mut miss = 0;
         for _ in 0..200 {
-            let p = [
-                r(0., 60.),
-                r(0., 60.),
-                r(0., 60.),
-                r(0., 60.),
-                r(0., 60.),
-                r(0., 60.),
-            ];
+            let p: [f64; 6] = std::array::from_fn(|_| r.rnd(0., 60.));
             let [x0, y0, x1, y1, x2, y2] = p;
             let mut m = vec![0.0; SM * SM];
             shadow_tri(&mut m, p, [1.0; 3], None);
@@ -613,7 +611,7 @@ mod tests {
         }];
         let mut fb = Framebuffer::new(60, 60, 1.0, 1.0, 1);
         let covered = |fb: &mut Framebuffer, items: &mut Vec<Item>| {
-            render(fb, items, &IDENTITY, [0.0; 3]);
+            render(fb, items, &DMat3::IDENTITY, [0.0; 3]);
             fb.z.iter().filter(|&&z| z > 0.0).count()
         };
         let full = covered(&mut fb, &mut items);
@@ -653,7 +651,7 @@ mod tests {
             },
         ];
         let mut fb = Framebuffer::new(80, 80, 1.0, 1.0, 1);
-        render(&mut fb, &mut items, &IDENTITY, [0.0; 3]);
+        render(&mut fb, &mut items, &DMat3::IDENTITY, [0.0; 3]);
         let px = |wx: f64, wy: f64, wz: f64| {
             let iz = 1.0 / (CAMZ - wz);
             (fb.cy - wy * fb.f * iz).floor() as usize * fb.w

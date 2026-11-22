@@ -5,7 +5,7 @@
 // Every rnd() call sits in its own statement, in the order the shape was tuned with: the
 // start pose in main is fitted to this exact geometry.
 use super::{Rng, Scene, paper};
-use crate::engine::math3d::{Frame, V3, add, cross, frame, mix, norm, scale, v};
+use crate::engine::math3d::{DVec3, Frame, dvec3, frame};
 use crate::engine::mesh::Builder;
 use crate::engine::raster::Item;
 use std::f64::consts::PI;
@@ -42,14 +42,14 @@ struct Pet {
 
 /// One petal at angle a around flower frame f.
 fn petal_at(b: &mut Builder, r: &mut Rng, f: &Frame, a: f64, o: &Pet) {
-    let d = mix(f.t, a.cos(), f.b, a.sin());
+    let d = f.t * a.cos() + f.b * a.sin();
     let tilt = o.tilt + r.rnd(-0.12, 0.12);
-    let t = mix(d, tilt.cos(), f.n, tilt.sin());
-    let n = mix(d, -tilt.sin(), f.n, tilt.cos());
+    let t = d * tilt.cos() + f.n * tilt.sin();
+    let n = d * -tilt.sin() + f.n * tilt.cos();
     let p = Frame {
-        o: add(add(f.o, scale(d, o.r0)), scale(f.n, o.h0)),
+        o: f.o + d * o.r0 + f.n * o.h0,
         t,
-        b: cross(n, t),
+        b: n.cross(t),
         n,
     };
     let j = r.rnd(0.85, 1.1); // brightness and slight hue shift per petal
@@ -247,7 +247,7 @@ fn daisy(b: &mut Builder, r: &mut Rng, fr: &Frame, s: f64) {
 fn rose(b: &mut Builder, r: &mut Rng, fr: &Frame, s: f64) {
     let golden = PI * (3.0 - 5.0f64.sqrt());
     b.ellipsoid(
-        &frame(add(fr.o, scale(fr.n, 0.05 * s)), fr.n, 0.0),
+        &frame(fr.o + fr.n * (0.05 * s), fr.n, 0.0),
         (0.025 * s, 0.025 * s, 0.04 * s),
         10,
         6,
@@ -287,7 +287,7 @@ fn carnation(b: &mut Builder, r: &mut Rng, fr: &Frame, s: f64) {
         [0.95, 0.42, 0.35]
     };
     let fc = Frame {
-        o: add(fr.o, scale(fr.n, 0.04 * s)),
+        o: fr.o + fr.n * (0.04 * s),
         ..*fr
     };
     // irregular frills: the phase wanders with height so the folds don't line up into stripes
@@ -312,10 +312,7 @@ fn berries(b: &mut Builder, r: &mut Rng, fr: &Frame, s: f64) {
     for k in 1..=9 {
         let (a, rr) = (k as f64 * 2.4, 0.05 * (k as f64).sqrt() * s);
         let lift = r.rnd(0.0, 0.06);
-        let o = add(
-            add(fr.o, mix(fr.t, rr * a.cos(), fr.b, rr * a.sin())),
-            scale(fr.n, lift * s),
-        );
+        let o = fr.o + (fr.t * (rr * a.cos()) + fr.b * (rr * a.sin())) + fr.n * (lift * s);
         let [cr, cg, cb] = lerp3([0.55, 0.03, 0.04], [0.9, 0.2, 0.06], r.r()); // ripeness varies
         b.ellipsoid(
             &frame(o, fr.n, 0.0),
@@ -331,18 +328,12 @@ fn berries(b: &mut Builder, r: &mut Rng, fr: &Frame, s: f64) {
             }, // dark tip
             None,
         );
-        b.cylinder(
-            o,
-            add(o, scale(fr.n, -0.12 * s)),
-            0.008 * s,
-            4,
-            (0.25, 0.35, 0.12),
-        );
+        b.cylinder(o, o + fr.n * (-0.12 * s), 0.008 * s, 4, (0.25, 0.35, 0.12));
     }
 }
 
 fn bud(b: &mut Builder, _: &mut Rng, fr: &Frame, s: f64) {
-    let o = add(fr.o, scale(fr.n, 0.1 * s));
+    let o = fr.o + fr.n * (0.1 * s);
     b.ellipsoid(
         &frame(o, fr.n, 0.0),
         (0.045 * s, 0.045 * s, 0.15 * s),
@@ -363,18 +354,18 @@ fn bud(b: &mut Builder, _: &mut Rng, fr: &Frame, s: f64) {
 fn leaf(
     b: &mut Builder,
     r: &mut Rng,
-    o: V3,
-    dir: V3,
-    n: V3,
+    o: DVec3,
+    dir: DVec3,
+    n: DVec3,
     (len, wid): (f64, f64),
     col: Option<C3>,
 ) {
-    let d = norm(dir);
+    let d = dir.normalize_or(DVec3::Z);
     let pf = Frame {
         o,
         t: d,
-        b: norm(cross(n, d)),
-        n: norm(n),
+        b: n.cross(d).normalize_or(DVec3::Z),
+        n: n.normalize_or(DVec3::Z),
     };
     let j = r.rnd(0.8, 1.15);
     let olive = r.rnd(0.0, 0.08);
@@ -395,42 +386,34 @@ fn leaf(
     );
 }
 
-fn fern(b: &mut Builder, r: &mut Rng, o: V3, dir: V3, n: V3) {
-    let d = norm(dir);
-    let side = norm(cross(n, d));
+fn fern(b: &mut Builder, r: &mut Rng, o: DVec3, dir: DVec3, n: DVec3) {
+    let d = dir.normalize_or(DVec3::Z);
+    let side = n.cross(d).normalize_or(DVec3::Z);
     for k in 1..=12 {
         let t = k as f64 / 12.0;
-        let p = add(o, scale(d, 0.6 * t));
+        let p = o + d * (0.6 * t);
         let l = 0.12 * (1.0 - t * 0.7);
         for sgn in [-1.0, 1.0] {
-            leaf(
-                b,
-                r,
-                p,
-                add(scale(side, sgn), scale(d, 0.5)),
-                n,
-                (l, 0.025),
-                None,
-            );
+            leaf(b, r, p, side * sgn + d * 0.5, n, (l, 0.025), None);
         }
     }
-    b.cylinder(o, add(o, scale(d, 0.6)), 0.006, 4, (0.15, 0.25, 0.08));
+    b.cylinder(o, o + d * 0.6, 0.006, 4, (0.15, 0.25, 0.08));
 }
 
 /// Wheat stalk: thin golden stem ending in a head of grains in two alternating rows.
-fn wheat(b: &mut Builder, o: V3, dir: V3) {
-    let d = norm(dir);
-    let side = norm(cross(v(0.0, 0.0, 1.0), d));
-    let tipp = add(o, scale(d, 0.6));
+fn wheat(b: &mut Builder, o: DVec3, dir: DVec3) {
+    let d = dir.normalize_or(DVec3::Z);
+    let side = dvec3(0.0, 0.0, 1.0).cross(d).normalize_or(DVec3::Z);
+    let tipp = o + d * 0.6;
     b.cylinder(o, tipp, 0.008, 4, (0.75, 0.6, 0.3));
     for k in 0..=13 {
         let kf = k as f64;
         let sg = if k % 2 == 0 { 1.0 } else { -1.0 };
-        let p = add(tipp, scale(d, -0.28 + 0.021 * kf));
-        let g = add(p, scale(side, sg * 0.016 * (1.0 - kf / 20.0)));
+        let p = tipp + d * (-0.28 + 0.021 * kf);
+        let g = p + side * (sg * 0.016 * (1.0 - kf / 20.0));
         let j = 0.9 + 0.2 * hash(kf * 7.3);
         b.ellipsoid(
-            &frame(g, add(d, scale(side, sg * 0.5)), 0.0),
+            &frame(g, d + side * (sg * 0.5), 0.0),
             (0.017, 0.014, 0.034),
             6,
             4,
@@ -441,21 +424,21 @@ fn wheat(b: &mut Builder, o: V3, dir: V3) {
 }
 
 /// Eucalyptus sprig: pairs of round silver-green leaves along a curving stem.
-fn eucalyptus(b: &mut Builder, r: &mut Rng, o: V3, dir: V3, n: V3) {
-    let d = norm(dir);
-    let side = norm(cross(n, d));
-    b.cylinder(o, add(o, scale(d, 0.6)), 0.006, 4, (0.35, 0.3, 0.25));
+fn eucalyptus(b: &mut Builder, r: &mut Rng, o: DVec3, dir: DVec3, n: DVec3) {
+    let d = dir.normalize_or(DVec3::Z);
+    let side = n.cross(d).normalize_or(DVec3::Z);
+    b.cylinder(o, o + d * 0.6, 0.006, 4, (0.35, 0.3, 0.25));
     for k in 1..=6 {
-        let p = add(o, scale(d, 0.1 * k as f64));
+        let p = o + d * (0.1 * k as f64);
         let sz = 0.075 * (1.0 - k as f64 * 0.08);
         for sg in [-1.0, 1.0] {
-            let dir = add(scale(side, sg), scale(d, 0.25));
+            let dir = side * sg + d * 0.25;
             leaf(
                 b,
                 r,
                 p,
                 dir,
-                add(n, scale(side, -sg * 0.3)),
+                n + side * (-sg * 0.3),
                 (sz, sz * 0.9),
                 Some([0.42, 0.55, 0.5]),
             );
@@ -464,15 +447,15 @@ fn eucalyptus(b: &mut Builder, r: &mut Rng, o: V3, dir: V3, n: V3) {
 }
 
 /// Goldenrod spray: a short stem with little branches of tiny gold florets (fills the gaps).
-fn goldenrod(b: &mut Builder, r: &mut Rng, o: V3, n: V3) {
+fn goldenrod(b: &mut Builder, r: &mut Rng, o: DVec3, n: DVec3) {
     let spin = r.rnd(0.0, 2.0 * PI);
     let f0 = frame(o, n, spin);
     for br in 0..=2 {
         let a = br as f64 * 2.1 + r.rnd(-0.3, 0.3);
-        let bd = norm(add(scale(f0.n, 0.8), mix(f0.t, a.cos(), f0.b, a.sin())));
+        let bd = (f0.n * 0.8 + (f0.t * a.cos() + f0.b * a.sin())).normalize_or(DVec3::Z);
         for k in 1..=5 {
             let up = r.rnd(-0.01, 0.02);
-            let p = add(add(o, scale(bd, 0.03 * k as f64)), scale(f0.n, up));
+            let p = o + bd * (0.03 * k as f64) + f0.n * up;
             let j = r.rnd(0.85, 1.1);
             b.ellipsoid(
                 &frame(p, f0.n, 0.0),
@@ -490,18 +473,18 @@ fn goldenrod(b: &mut Builder, r: &mut Rng, o: V3, n: V3) {
 const FLAT: f64 = 0.6;
 const TIE: f64 = -1.6; // z of the ribbon tie (narrow end of the paper)
 const STEM_END: f64 = -2.8;
-fn on_dome(d: V3, r: f64) -> V3 {
-    v(d.x * r, d.y * r, d.z * r * FLAT)
+fn on_dome(d: DVec3, r: f64) -> DVec3 {
+    dvec3(d.x * r, d.y * r, d.z * r * FLAT)
 }
-fn dome_normal(d: V3) -> V3 {
-    norm(v(d.x, d.y, d.z / FLAT))
+fn dome_normal(d: DVec3) -> DVec3 {
+    dvec3(d.x, d.y, d.z / FLAT).normalize_or(DVec3::Z)
 }
 /// Unit direction at angle polar from the dome axis, turned az around it.
-fn polar_dir(polar: f64, az: f64) -> V3 {
-    v(polar.sin() * az.cos(), polar.sin() * az.sin(), polar.cos())
+fn polar_dir(polar: f64, az: f64) -> DVec3 {
+    dvec3(polar.sin() * az.cos(), polar.sin() * az.sin(), polar.cos())
 }
 
-fn pinecone(b: &mut Builder, o: V3, n: V3) {
+fn pinecone(b: &mut Builder, o: DVec3, n: DVec3) {
     let scales = |u: f64, w: f64| (u * 2.0 * PI * 8.0 + w * PI * 10.0).sin().max(0.0);
     b.ellipsoid(
         &frame(o, n, 0.0),
@@ -522,7 +505,7 @@ fn twine(b: &mut Builder, z: f64) {
     for k in 0..=72 {
         let kf = k as f64;
         let (a, z) = (kf / 12.0 * 2.0 * PI, z - kf * 0.0028);
-        let p = v(0.078 * a.cos(), 0.078 * a.sin(), z);
+        let p = dvec3(0.078 * a.cos(), 0.078 * a.sin(), z);
         if let Some(q) = prev {
             b.cylinder(q, p, 0.008, 4, (0.78, 0.66, 0.45));
         }
@@ -538,8 +521,8 @@ fn bow(b: &mut Builder, band: f64, skirt: f64, c: C3) {
         let k = 0.8 + 0.4 * (1.0 - (u * 2.0 - 1.0).abs()); // satin sheen across the band
         [c[0] * k, c[1] * k, c[2] * k, 0.6]
     };
-    let knot = v(0.0, -(band + 0.03), TIE);
-    let (out, up) = (v(0.0, -1.0, 0.0), v(0.0, 0.0, 1.0));
+    let knot = dvec3(0.0, -(band + 0.03), TIE);
+    let (out, up) = (dvec3(0.0, -1.0, 0.0), dvec3(0.0, 0.0, 1.0));
     b.ellipsoid(
         &frame(knot, out, 0.0),
         (0.045, 0.045, 0.04),
@@ -549,19 +532,15 @@ fn bow(b: &mut Builder, band: f64, skirt: f64, c: C3) {
         None,
     );
     for sx in [-1.0, 1.0] {
-        let side = v(sx, 0.0, 0.0);
+        let side = dvec3(sx, 0.0, 0.0);
         let (mut pts, mut dirs) = (Vec::new(), Vec::new());
         for k in 0..=16 {
             // loop: out from the knot and back, a flattened ellipse in the side/out plane
             let th = k as f64 / 16.0 * 2.0 * PI;
-            let p = add(
-                knot,
-                add(
-                    scale(side, 0.17 * (1.0 - th.cos())),
-                    scale(out, 0.07 * th.sin() + 0.03 * (1.0 - th.cos())),
-                ),
-            );
-            pts.push(add(p, scale(up, 0.02 * (1.0 - th.cos()))));
+            let p = knot
+                + (side * (0.17 * (1.0 - th.cos()))
+                    + out * (0.07 * th.sin() + 0.03 * (1.0 - th.cos())));
+            pts.push(p + up * (0.02 * (1.0 - th.cos())));
             dirs.push(up);
         }
         b.ribbon(&pts, &dirs, 0.07, col);
@@ -569,18 +548,11 @@ fn bow(b: &mut Builder, band: f64, skirt: f64, c: C3) {
         for k in 0..=10 {
             // tail hanging down with a gentle wave, cut at the end
             let t = k as f64 / 10.0;
-            let p = add(
-                knot,
-                add(
-                    scale(side, 0.12 * t),
-                    add(
-                        scale(up, -0.5 * t),
-                        scale(out, 0.05 * (t * 4.0).sin() + (skirt - band).max(0.0)),
-                    ),
-                ),
-            );
+            let p = knot
+                + (side * (0.12 * t)
+                    + (up * (-0.5 * t) + out * (0.05 * (t * 4.0).sin() + (skirt - band).max(0.0))));
             pts.push(p);
-            dirs.push(norm(add(side, scale(up, 0.3))));
+            dirs.push((side + up * 0.3).normalize_or(DVec3::Z));
         }
         b.ribbon(&pts, &dirs, 0.06, col);
     }
@@ -622,21 +594,13 @@ pub fn build() -> Scene {
         let a = r.rnd(0.0, 2.0 * PI);
         let z = r.rnd(0.05, 1.0);
         let rr = (1.0 - z * z).sqrt();
-        let dir = v(rr * a.cos(), rr * a.sin(), z);
+        let dir = dvec3(rr * a.cos(), rr * a.sin(), z);
         let n = dome_normal(dir);
         let spin = r.rnd(0.0, 2.0 * PI);
         let f0 = frame(on_dome(dir, 0.8), n, spin);
         let len = r.rnd(0.18, 0.3);
         let wid = r.rnd(0.06, 0.1);
-        leaf(
-            &mut b,
-            &mut r,
-            f0.o,
-            add(f0.t, scale(n, 0.3)),
-            n,
-            (len, wid),
-            None,
-        );
+        leaf(&mut b, &mut r, f0.o, f0.t + n * 0.3, n, (len, wid), None);
     }
 
     // Round florist layout: the sunflower in the middle, gerberas and roses around it, then
@@ -681,7 +645,7 @@ pub fn build() -> Scene {
             let tilt = if rpolar > 0.0 { 0.1 } else { 0.0 };
             let tx = r.rnd(-tilt, tilt);
             let ty = r.rnd(-tilt, tilt);
-            let n0 = norm(add(dome_normal(dir), v(tx, ty, 0.25)));
+            let n0 = (dome_normal(dir) + dvec3(tx, ty, 0.25)).normalize_or(DVec3::Z);
             let spin = r.rnd(0.0, 2.0 * PI);
             let fr = frame(o, n0, spin);
             let (size, flower) = kind.spec();
@@ -692,7 +656,7 @@ pub fn build() -> Scene {
             let sy = r.rnd(-0.04, 0.04);
             b.cylinder(
                 on_dome(dir, rr - 0.15),
-                v(sx, sy, TIE),
+                dvec3(sx, sy, TIE),
                 0.015,
                 5,
                 (0.2, 0.32, 0.12),
@@ -716,13 +680,13 @@ pub fn build() -> Scene {
 
     for k in 0..=13 {
         let a = k as f64 / 14.0 * 2.0 * PI + r.rnd(-0.1, 0.1);
-        let out = v(a.cos(), a.sin(), 0.0);
+        let out = dvec3(a.cos(), a.sin(), 0.0);
         let dz = r.rnd(-0.1, 0.1);
-        let o = add(scale(out, 0.75), v(0.0, 0.0, dz));
+        let o = out * 0.75 + dvec3(0.0, 0.0, dz);
         let up = r.rnd(0.1, 0.4);
-        let dir = add(out, v(0.0, 0.0, up));
+        let dir = out + dvec3(0.0, 0.0, up);
         if k % 5 == 2 {
-            fern(&mut sb, &mut r, o, dir, v(0.0, 0.0, 1.0));
+            fern(&mut sb, &mut r, o, dir, dvec3(0.0, 0.0, 1.0));
         } else {
             let len = r.rnd(0.4, 0.55);
             let wid = r.rnd(0.09, 0.13);
@@ -731,7 +695,7 @@ pub fn build() -> Scene {
                 &mut r,
                 o,
                 dir,
-                add(v(0.0, 0.0, 1.0), scale(out, -0.3)),
+                dvec3(0.0, 0.0, 1.0) + out * -0.3,
                 (len, wid),
                 None,
             );
@@ -740,40 +704,34 @@ pub fn build() -> Scene {
     // things spilling out past the paper break up the round silhouette
     for a in [0.4f64, 1.1, 2.6, 3.9, 5.3] {
         // wheat, standing tall
-        let out = v(a.cos(), a.sin(), 0.0);
+        let out = dvec3(a.cos(), a.sin(), 0.0);
         wheat(
             &mut sb,
-            add(scale(out, 0.55), v(0.0, 0.0, 0.1)),
-            add(scale(out, 0.7), v(0.0, 0.0, 0.75)),
+            out * 0.55 + dvec3(0.0, 0.0, 0.1),
+            out * 0.7 + dvec3(0.0, 0.0, 0.75),
         );
     }
     for a in [0.9f64, 2.2, 3.4, 4.7] {
         // eucalyptus, arching outward
-        let out = v(a.cos(), a.sin(), 0.0);
-        let n = add(v(0.0, 0.0, 1.0), scale(out, -0.4));
-        eucalyptus(
-            &mut sb,
-            &mut r,
-            add(scale(out, 0.8), v(0.0, 0.0, 0.0)),
-            add(out, v(0.0, 0.0, 0.25)),
-            n,
-        );
+        let out = dvec3(a.cos(), a.sin(), 0.0);
+        let n = dvec3(0.0, 0.0, 1.0) + out * -0.4;
+        eucalyptus(&mut sb, &mut r, out * 0.8, out + dvec3(0.0, 0.0, 0.25), n);
     }
     let autumn = [[0.6, 0.2, 0.05], [0.45, 0.08, 0.04], [0.7, 0.38, 0.08]];
     for (k, a) in [0.15f64, 1.5, 2.9, 4.2, 5.0, 5.8].into_iter().enumerate() {
         // autumn leaves drooping over the edge, in pairs, fanned
-        let out = v(a.cos(), a.sin(), 0.0);
+        let out = dvec3(a.cos(), a.sin(), 0.0);
         for j in [-1i32, 1] {
-            let side = v(-a.sin(), a.cos(), 0.0);
-            let o = add(scale(out, 0.9), v(0.0, 0.0, 0.02));
-            let dir = add(add(out, scale(side, 0.35 * j as f64)), v(0.0, 0.0, -0.1));
+            let side = dvec3(-a.sin(), a.cos(), 0.0);
+            let o = out * 0.9 + dvec3(0.0, 0.0, 0.02);
+            let dir = out + side * (0.35 * j as f64) + dvec3(0.0, 0.0, -0.1);
             let col = autumn[(k as i32 + 1 + j).rem_euclid(3) as usize];
             leaf(
                 &mut sb,
                 &mut r,
                 o,
                 dir,
-                add(v(0.0, 0.0, 1.0), scale(out, -0.2)),
+                dvec3(0.0, 0.0, 1.0) + out * -0.2,
                 (0.22, 0.075),
                 Some(col),
             );
@@ -782,15 +740,15 @@ pub fn build() -> Scene {
     // back: collar of leaves hiding the core, stems gathered into a tied bundle
     for k in 0..=15 {
         let a = (k as f64 + 0.5) / 16.0 * 2.0 * PI + r.rnd(-0.1, 0.1);
-        let out = v(a.cos(), a.sin(), 0.0);
+        let out = dvec3(a.cos(), a.sin(), 0.0);
         let len = r.rnd(0.6, 0.75);
         let wid = r.rnd(0.18, 0.24);
         leaf(
             &mut b,
             &mut r,
-            add(scale(out, 0.3), v(0.0, 0.0, -0.2)),
-            add(out, v(0.0, 0.0, 0.1)),
-            add(v(0.0, 0.0, -1.0), out),
+            out * 0.3 + dvec3(0.0, 0.0, -0.2),
+            out + dvec3(0.0, 0.0, 0.1),
+            dvec3(0.0, 0.0, -1.0) + out,
             (len, wid),
             None,
         );
@@ -799,8 +757,8 @@ pub fn build() -> Scene {
         // stem bundle below the tie
         let a = k as f64 / 9.0 * 2.0 * PI;
         b.cylinder(
-            v(0.05 * a.cos(), 0.05 * a.sin(), TIE),
-            v(0.08 * a.cos(), 0.08 * a.sin(), STEM_END),
+            dvec3(0.05 * a.cos(), 0.05 * a.sin(), TIE),
+            dvec3(0.08 * a.cos(), 0.08 * a.sin(), STEM_END),
             0.018,
             5,
             (0.25, 0.36, 0.13),
@@ -823,11 +781,11 @@ pub fn build() -> Scene {
     let mut cb = Builder::new();
     for k in 0..=2 {
         let a = 0.9 + k as f64 * 2.2;
-        let out = v(a.cos(), a.sin(), 0.0);
+        let out = dvec3(a.cos(), a.sin(), 0.0);
         pinecone(
             &mut cb,
-            add(scale(out, 0.92), v(0.0, 0.0, 0.05)),
-            add(out, v(0.0, 0.0, 0.8)),
+            out * 0.92 + dvec3(0.0, 0.0, 0.05),
+            out + dvec3(0.0, 0.0, 0.8),
         );
     }
     let cones = cb.finish();
