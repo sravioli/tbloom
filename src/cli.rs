@@ -1,33 +1,62 @@
 // Command-line options.
 use clap::Parser;
+use clap::builder::styling::{AnsiColor, Effects, Style, Styles};
 
-const CONTROLS: &str = "\
-Controls (each rotates about one fixed screen axis):
-  Tab or 1/2/3   pick what a mouse drag does: 1 turn (left/right), 2 tilt (up/down), 3 roll
-  a/d, left/right    turn          w/s, up/down    tilt          A/D (shift)    roll
-  mouse wheel zooms, r resets the view, q or Ctrl-C quits";
+// Help colors (clap drops them when the output is not a terminal, or with NO_COLOR set).
+const HEADER: Style = AnsiColor::Yellow.on_default().effects(Effects::BOLD);
+const LITERAL: Style = AnsiColor::Green.on_default().effects(Effects::BOLD);
+const STYLES: Styles = Styles::styled()
+    .header(HEADER)
+    .usage(HEADER)
+    .literal(LITERAL)
+    .placeholder(AnsiColor::Cyan.on_default())
+    .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
+    .valid(LITERAL)
+    .invalid(AnsiColor::Yellow.on_default());
+
+/// The controls, styled like the option list above them.
+fn controls() -> String {
+    let (h, k) = (HEADER, LITERAL);
+    let key = |s: &str| format!("{k}{s}{k:#}");
+    format!(
+        "{h}Controls:{h:#} (each rotates about one fixed screen axis)
+  {tab} or {n}       pick what a mouse drag does: 1 turn (left/right), 2 tilt (up/down), 3 roll
+  {ad}, {lr}    turn          {ws}, {ud}    tilt          {sad} (shift)    roll
+  mouse wheel zooms, {r} resets the view, {q} or {cc} quits",
+        tab = key("Tab"),
+        n = key("1/2/3"),
+        ad = key("a/d"),
+        lr = key("left/right"),
+        ws = key("w/s"),
+        ud = key("up/down"),
+        sad = key("A/D"),
+        r = key("r"),
+        q = key("q"),
+        cc = key("Ctrl-C"),
+    )
+}
 
 /// Fullscreen terminal renderer for a 3D autumn bouquet.
 #[derive(Parser)]
-#[command(name = "tbloom", after_help = CONTROLS, args_override_self = true)]
+#[command(name = "tbloom", after_help = controls(), styles = STYLES, args_override_self = true)]
 pub struct Opt {
     /// Show a binary FBX model (textures looked up next to it or in ../textures)
-    #[arg(long, value_name = "FILE")]
+    #[arg(short, long, value_name = "FILE")]
     pub model: Option<String>,
     /// Sextant glyphs (2x3 px per cell); needs a font with Legacy Computing blocks
-    #[arg(long, conflicts_with = "ascii")]
+    #[arg(short, long, conflicts_with = "ascii")]
     pub nerd: bool,
     /// Plain text: ASCII luminance ramp (still colored unless --no-color)
-    #[arg(long)]
+    #[arg(short, long)]
     pub ascii: bool,
-    /// No color escapes: luminance ramp (or dithered sextants with --nerd)
-    #[arg(long)]
+    /// No color escapes (monochrome): luminance ramp, or dithered sextants with --nerd
+    #[arg(short = 'M', long)]
     pub no_color: bool,
     /// Anti-aliasing: redraw a supersampled frame once input goes quiet
-    #[arg(long)]
+    #[arg(short = 'A', long)]
     pub aa: bool,
     /// Print one W x H frame to stdout and exit
-    #[arg(long = "snapshot", value_name = "WxH", value_parser = size)]
+    #[arg(short, long = "snapshot", value_name = "WxH", value_parser = size)]
     pub snap: Option<(usize, usize)>,
 }
 
@@ -52,5 +81,15 @@ mod tests {
         let o = Opt::try_parse_from(["tbloom", "--nerd", "--snapshot", "10x5"]).unwrap();
         assert!(o.nerd && !o.ascii && o.snap == Some((10, 5)));
         assert!(Opt::try_parse_from(["tbloom", "--nerd", "--ascii"]).is_err());
+        let o =
+            Opt::try_parse_from(["tbloom", "-n", "-M", "-A", "-s", "4x2", "-m", "f.fbx"]).unwrap();
+        assert!(
+            o.nerd
+                && o.no_color
+                && o.aa
+                && o.snap == Some((4, 2))
+                && o.model.as_deref() == Some("f.fbx")
+        );
+        assert!(Opt::try_parse_from(["tbloom", "-a", "-n"]).is_err());
     }
 }
