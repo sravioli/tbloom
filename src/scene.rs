@@ -1,5 +1,6 @@
 pub mod backdrop;
 pub mod bouquet;
+pub mod model;
 mod paper;
 
 use crate::engine::raster::Item;
