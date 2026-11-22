@@ -1,0 +1,10 @@
+[package]
+name = "tbloom"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libc = "0.2.191"
+miniz_oxide = "0.8"
+png = "0.18"
+zune-jpeg = "0.5"
